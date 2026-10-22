@@ -1,0 +1,4 @@
+*.tmp
+*.log
+# booking confirmation pages contain personal data
+data/booking_result_*.html

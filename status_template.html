@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>Bonn Termin Watcher</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f3f0; --card: #fcfcfb; --border: #e2e0da; --grid: #ecebe6;
+    --text: #0b0b0b; --text-2: #52514e; --muted: #77756f;
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+    --hit: #2a78d6; --idle: #b9b7b0;
+    --good-ink: #006300; --hit-ink: #1c5cab; --warn-ink: #8a5a00; --bad-ink: #a12828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #121211; --card: #1a1a19; --border: #2e2e2b; --grid: #262624;
+      --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
+      --hit: #3987e5; --idle: #4a4a46;
+      --good-ink: #5fd35f; --hit-ink: #86b6ef; --warn-ink: #fab219; --bad-ink: #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #121211; --card: #1a1a19; --border: #2e2e2b; --grid: #262624;
+    --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
+    --hit: #3987e5; --idle: #4a4a46;
+    --good-ink: #5fd35f; --hit-ink: #86b6ef; --warn-ink: #fab219; --bad-ink: #e66767;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--text-2); font-size: 14px; margin-top: 2px; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 999px;
+          font-weight: 600; font-size: 14px; background: var(--card); border: 1px solid var(--border); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .ok .dot { background: var(--good); } .hit .dot { background: var(--hit); }
+  .warn .dot { background: var(--warning); } .serious .dot { background: var(--serious); }
+  .bad .dot { background: var(--critical); } .idle .dot { background: var(--idle); }
+  .pill.ok .dot { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--good) 25%, transparent); } }
+  @media (prefers-reduced-motion: reduce) { .pill.ok .dot { animation: none; } }
+
+  .banner { border-radius: 12px; padding: 16px 18px; margin-bottom: 18px; font-weight: 600; border: 1px solid; }
+  .banner.hit { background: color-mix(in srgb, var(--hit) 12%, var(--card)); border-color: var(--hit); }
+  .banner.warn { background: color-mix(in srgb, var(--warning) 14%, var(--card)); border-color: var(--warning); }
+  .banner span { display: block; font-weight: 400; color: var(--text-2); margin-top: 4px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 18px; }
+  @media (max-width: 1180px) { .tiles { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 560px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile, .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+  .tile { padding: 14px 16px; min-width: 0; }
+  .tile .k { color: var(--text-2); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+  .tile .v { font-size: 24px; font-weight: 650; margin: 4px 0 2px; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .tile .d { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+
+  .card { padding: 16px 18px; margin-bottom: 18px; }
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .row2 .card { margin-bottom: 0; }
+  @media (max-width: 760px) { .row2 { grid-template-columns: 1fr; } }
+  .row2 + .card, .row2 { margin-bottom: 18px; }
+
+  ul.plain { list-style: none; margin: 0; padding: 0; }
+  ul.plain li { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-top: 1px solid var(--grid); }
+  ul.plain li:first-child { border-top: 0; }
+  .muted { color: var(--muted); } .t2 { color: var(--text-2); }
+  .tag { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; align-self: center; }
+  .tag.open { color: var(--good-ink); background: color-mix(in srgb, var(--good) 14%, transparent); }
+  .tag.later { color: var(--hit-ink); background: color-mix(in srgb, var(--hit) 14%, transparent); }
+  .tag.closed { color: var(--muted); background: var(--grid); }
+  .tag.match { color: var(--hit-ink); background: color-mix(in srgb, var(--hit) 14%, transparent); }
+
+  .strip { display: flex; flex-wrap: wrap; gap: 2px; }
+  .cell { width: 14px; height: 26px; border-radius: 4px; cursor: default; }
+  .cell.ok { background: var(--good); } .cell.hit { background: var(--hit); }
+  .cell.warn { background: var(--warning); } .cell.serious { background: var(--serious); }
+  .cell.bad { background: var(--critical); } .cell.idle { background: var(--idle); }
+  .cell.gap { background: repeating-linear-gradient(135deg, var(--idle) 0 2px, transparent 2px 5px); }
+  .cell.freed { box-shadow: inset 0 -6px 0 var(--hit); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; font-size: 13px; color: var(--text-2); }
+  .legend i { display: inline-block; width: 10px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 6px; }
+  .axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-top: 6px; }
+  #tip { position: fixed; pointer-events: none; z-index: 10; background: var(--text); color: var(--card);
+         font-size: 13px; padding: 7px 10px; border-radius: 8px; max-width: 280px; display: none; }
+
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th { text-align: left; color: var(--text-2); font-weight: 600; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .04em; padding: 6px 10px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 7px 10px; border-top: 1px solid var(--grid); white-space: nowrap; }
+  td.note { white-space: normal; color: var(--text-2); min-width: 220px; }
+  td .dot { display: inline-block; vertical-align: 1px; margin-right: 6px; }
+  td.ok .dot { background: var(--good); } td.hit .dot { background: var(--hit); } td.warn .dot { background: var(--warning); }
+  td.serious .dot { background: var(--serious); } td.bad .dot { background: var(--critical); } td.idle .dot { background: var(--idle); }
+  .num { text-align: right; }
+  a { color: var(--hit-ink); }
+  footer { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--grid); padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere; }
+  .empty { color: var(--muted); padding: 6px 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Bonn Termin Watcher</h1>
+      <div class="sub">Umschreibung eines ausländischen Führerscheins · Dienstleistungszentrum, Berliner Platz 2</div>
+    </div>
+    <div id="status" class="pill"><span class="dot"></span><span></span></div>
+  </header>
+  <div id="banner"></div>
+  <section class="tiles" id="tiles"></section>
+  <div class="row2">
+    <section class="card">
+      <h2>Looking for</h2>
+      <ul class="plain" id="windows"></ul>
+    </section>
+    <section class="card">
+      <h2>Slots that opened up <span class="muted" style="font-weight:400">(cancellations seen between checks)</span></h2>
+      <ul class="plain" id="freed"></ul>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Check timeline <span class="muted" style="font-weight:400" id="stripnote"></span></h2>
+    <div class="strip" id="strip"></div>
+    <div class="axis"><span id="axis-l"></span><span id="axis-r"></span></div>
+    <div class="legend">
+      <span><i style="background:var(--good)"></i>Checked, no match</span>
+      <span><i style="background:var(--hit)"></i>Match / booked</span>
+      <span><i style="background:var(--good);box-shadow:inset 0 -5px 0 var(--hit)"></i>Slots freed up</span>
+      <span><i style="background:var(--serious)"></i>Booking failed</span>
+      <span><i style="background:var(--critical)"></i>Error</span>
+      <span><i style="background:var(--warning)"></i>Paused (backoff)</span>
+      <span><i class="cell gap" style="width:10px;height:14px"></i>Missed checks</span>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Recent checks</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Time</th><th>Result</th><th class="num">Slots</th><th>Earliest free</th><th class="num">Freed</th><th class="num">Taken</th><th class="num">Took</th><th>Note</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+  </section>
+  <footer id="foot"></footer>
+</main>
+<div id="tip"></div>
+<script>
+const D = /*__DATA__*/null;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const parse = s => new Date(s.length === 16 ? s + ":00" : s);
+const fmtTime = d => d.toLocaleTimeString("en-GB", {hour: "2-digit", minute: "2-digit"});
+const fmtDay = d => d.toLocaleDateString("en-GB", {weekday: "short", day: "numeric", month: "short"});
+const fmtSlot = s => { const d = parse(s); return `${fmtDay(d)}${d.getFullYear() !== new Date().getFullYear() ? " " + d.getFullYear() : ""}, ${fmtTime(d)}`; };
+const ago = mins => mins < 1 ? "just now" : mins < 60 ? `${Math.round(mins)} min ago` : `${Math.floor(mins / 60)} h ${Math.round(mins % 60)} min ago`;
+const dur = mins => mins < 60 ? `${Math.max(0, Math.round(mins))} min` : `${Math.floor(mins / 60)} h ${Math.round(mins % 60)} min`;
+const RES = {
+  no_match: ["ok", "No match"], alerted: ["hit", "Match, alerted"], booked: ["hit", "Booked"],
+  unclear: ["warn", "Booking unclear"], failed: ["serious", "Booking failed"], error: ["bad", "Error"], idle: ["idle", "Done, idle"],
+  paused: ["warn", "Paused (backoff)"], booked_backup: ["hit", "Backup booked"],
+};
+const hmAdd = (hm, mins) => { const [h, m] = hm.split(":").map(Number), t = h * 60 + m + mins;
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`; };
+const rule = w => w.before ? `starts before ${w.before}` : w.end_by ? `over by ${w.end_by} (starts by ${hmAdd(w.end_by, -D.duration_min)})` : `starts ${w.after} or later`;
+const windowOf = s => D.windows.find(w => s.slice(0, 10) === w.date && (w.before ? s.slice(11, 16) < w.before
+  : w.end_by ? hmAdd(s.slice(11, 16), D.duration_min) <= w.end_by : s.slice(11, 16) >= w.after));
+
+function render() {
+  const now = new Date();
+  const checks = D.checks, last = checks[checks.length - 1];
+  const stop = D.search_until ? parse(D.search_until) : now;
+  const backup = D.state.backup_booked;
+  const age = last ? (now - parse(last.t)) / 60000 : null;
+  const real = checks.filter(c => c.result !== "idle" && c.result !== "paused");
+  const pauseUntil = D.state.pause_until && parse(D.state.pause_until) > now ? parse(D.state.pause_until) : null;
+  const errors = checks.filter(c => c.result === "error").length;
+  const freedAll = checks.flatMap(c => (c.freed || []).map(s => ({seen: c.t, slot: s})));
+
+  // status pill + banner
+  let st;
+  if (D.state.booked) st = ["hit", `Booked · ${D.state.booked}`];
+  else if (D.state.unclear) st = ["warn", "Booking unclear · auto-booking paused"];
+  else if (now >= stop) st = ["idle", backup ? `Finished · keeping backup ${backup}` : "Finished · search window over"];
+  else if (!last) st = ["idle", "Waiting for first check"];
+  else if (pauseUntil) st = ["warn", `Paused until ${fmtTime(pauseUntil)} · backing off after errors`];
+  else if (age > (D.cloud ? 20 : D.interval_min * 1.6)) st = ["warn", `No check for ${dur(age)}${D.cloud ? "" : " · Mac asleep?"}`];
+  else if (last.result === "error") st = ["bad", "Last check failed · retrying"];
+  else st = ["ok", backup ? "Watching · backup booked, hunting Thu/Fri" : D.auto_book ? "Watching · auto-book on" : "Watching · alert only"];
+  $("status").className = "pill " + st[0];
+  $("status").lastElementChild.textContent = st[1];
+  const banners = [], mail = esc(D.contact.mail || "your email");
+  if (D.state.booked) banners.push(`<div class="banner hit">Appointment booked: ${esc(D.state.booked)}<span>Stadthaus, Berliner Platz 2. The confirmation goes to ${mail}.${backup
+    ? ` <strong>Cancel your backup appointment (${esc(backup)})</strong> with the link in its confirmation email, so the slot goes to someone else.` : ""}</span></div>`);
+  else if (backup) banners.push(`<div class="banner hit">Backup booked: ${esc(backup)}<span>Still looking for a slot today or tomorrow. If one turns up it gets booked too, and you cancel the backup with the link in its confirmation email.</span></div>`);
+  if (D.state.unclear) banners.push(`<div class="banner warn">Booking for ${esc(D.state.unclear)} was submitted but not clearly confirmed<span>Check ${mail}. Auto-booking is paused so it can't book twice; the watcher now only alerts.</span></div>`);
+  $("banner").innerHTML = banners.join("");
+
+  // tiles
+  const lastReal = [...real].reverse().find(c => c.slots != null);
+  const nextIn = last ? D.interval_min - age : null;
+  const latestFreed = freedAll[freedAll.length - 1];
+  const tiles = [
+    ["Last check", last ? ago(age) : "–", last ? fmtTime(parse(last.t)) + (last.secs != null ? ` · took ${last.secs} s` : "") : "no checks yet"],
+    D.cloud
+      ? ["Checks run", pauseUntil ? `after ${fmtTime(pauseUntil)}` : `every ~${D.interval_min} min`, pauseUntil ? "paused after errors" : "on GitHub · this page updates every ~10 min"]
+      : ["Next check", pauseUntil ? `after ${fmtTime(pauseUntil)}` : last && now < stop ? (nextIn > 0 ? `in ~${dur(nextIn)}` : nextIn > -1.5 ? "any moment" : `overdue ${dur(-nextIn)}`) : "–",
+      pauseUntil ? "paused after errors" : `every ${D.interval_min - 1}–${D.interval_min + 1} min, randomized`],
+    ["Checks", String(real.length), `${errors} error${errors === 1 ? "" : "s"}${checks[0] ? " · since " + fmtDay(parse(checks[0].t)) + " " + fmtTime(parse(checks[0].t)) : ""}`],
+    ["Earliest free slot", lastReal && lastReal.earliest ? fmtDay(parse(lastReal.earliest)) : "–",
+      lastReal && lastReal.earliest ? `${parse(lastReal.earliest).getFullYear()} · ${lastReal.slots} slots listed` : "nothing listed"],
+    ["Slots freed up", String(freedAll.length), latestFreed ? `latest ${fmtSlot(latestFreed.slot)}` : "none seen yet"],
+    ["Time left", D.state.booked ? "done" : now < stop ? dur((stop - now) / 60000) : "over", D.state.booked ? "goal slot booked" : `stops ${fmtDay(stop)}, ${fmtTime(stop)}`],
+  ];
+  $("tiles").innerHTML = tiles.map(([k, v, d]) => `<div class="tile"><div class="k">${k}</div><div class="v">${esc(v)}</div><div class="d">${esc(d)}</div></div>`).join("");
+
+  // windows
+  const today = now.toDateString();
+  const winItem = w => {
+    const day = parse(w.date + "T00:00"), cutoff = parse(w.deadline);
+    const done = D.state.booked || (w.backup && backup);
+    const tag = done ? ["closed", w.backup && backup && !D.state.booked ? "backup booked" : "done"]
+      : now >= cutoff ? ["closed", "closed"] : day.toDateString() === today ? ["open", "open now"] : ["later", "upcoming"];
+    const note = w.after ? "any time that day" : `checks until ${fmtTime(cutoff)} (${D.min_lead_minutes} min notice)`;
+    return `<li><span>${fmtDay(day)} · ${rule(w)}<br><span class="muted">${note}</span></span><span class="tag ${tag[0]}">${tag[1]}</span></li>`;
+  };
+  const group = (title, ws) => ws.length ? `<li class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;font-weight:600">${title}</li>` + ws.map(winItem).join("") : "";
+  $("windows").innerHTML = group("Goal: book and stop", D.windows.filter(w => !w.backup))
+    + group("Backup: book, keep looking for goal", D.windows.filter(w => w.backup))
+    + `<li><span>${D.auto_book ? "Auto-book as" : "Alert only"}<br><span class="muted">${D.cloud ? "your details (GitHub secrets)" : `${esc(D.contact.name)} · ${esc(D.contact.mail)}`}</span></span><span class="tag ${D.auto_book && !D.state.unclear ? "open" : "closed"}">${D.auto_book && !D.state.unclear ? "on" : "off"}</span></li>`
+    + `<li><span class="muted">Booking site</span><a href="${esc(D.public_url)}" target="_blank" rel="noopener">open termine.bonn.de ↗</a></li>`;
+
+  // freed feed
+  $("freed").innerHTML = freedAll.length ? freedAll.slice(-12).reverse().map(f => {
+    const w = windowOf(f.slot);
+    return `<li><span>${esc(fmtSlot(f.slot))}${w ? ` <span class="tag match">${w.backup ? "backup window" : "goal window"}</span>` : ""}</span><span class="muted">seen ${fmtTime(parse(f.seen))}</span></li>`;
+  }).join("")
+    : `<li class="empty">None yet. When someone cancels, the freed slot shows up here.</li>`;
+
+  // timeline strip: last 72 checks, with hatched cells for missed intervals
+  const recent = checks.slice(-72), cells = [];
+  recent.forEach((c, i) => {
+    if (i > 0) {
+      const gap = (parse(c.t) - parse(recent[i - 1].t)) / 60000;
+      const missed = Math.round(gap / D.interval_min) - 1;
+      if (gap > D.interval_min * 2.2) cells.push(`<div class="cell gap" data-tip="${esc(`No check for ${dur(gap)} (${missed} missed). Mac asleep or offline?`)}"></div>`);
+    }
+    const [cls, label] = RES[c.result] || ["idle", c.result];
+    const tip = `${fmtDay(parse(c.t))} ${fmtTime(parse(c.t))} · ${label}` + (c.slots != null ? ` · ${c.slots} slots` : "")
+      + (c.freed_count ? ` · ${c.freed_count} freed` : "") + (c.msg ? ` · ${c.msg}` : "");
+    cells.push(`<div class="cell ${cls}${c.freed_count ? " freed" : ""}" data-tip="${esc(tip)}"></div>`);
+  });
+  $("strip").innerHTML = cells.join("") || `<div class="empty">No checks yet.</div>`;
+  $("stripnote").textContent = recent.length ? `(last ${recent.length} checks, hover for details)` : "";
+  $("axis-l").textContent = recent[0] ? fmtTime(parse(recent[0].t)) : "";
+  $("axis-r").textContent = last ? fmtTime(parse(last.t)) : "";
+
+  // table
+  $("rows").innerHTML = checks.slice(-40).reverse().map(c => {
+    const [cls, label] = RES[c.result] || ["idle", c.result];
+    return `<tr><td>${fmtDay(parse(c.t))} ${fmtTime(parse(c.t))}</td><td class="${cls}"><span class="dot"></span>${label}</td>`
+      + `<td class="num">${c.slots ?? "–"}</td><td>${c.earliest ? esc(fmtSlot(c.earliest)) : "–"}</td>`
+      + `<td class="num">${c.freed_count ?? "–"}</td><td class="num">${c.taken_count ?? "–"}</td><td class="num">${c.secs != null ? c.secs + " s" : "–"}</td>`
+      + `<td class="note">${esc(c.msg)}${c.page ? ` · <a href="${esc(c.page)}">result page</a>` : ""}</td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="empty">No checks yet.</td></tr>`;
+
+  $("foot").innerHTML = `Page generated ${fmtTime(parse(D.generated))} and reloads every minute. Stop the watcher: <code>${esc(D.stop_hint)}</code>`;
+}
+
+// hover tooltip for the timeline
+const tip = $("tip");
+document.addEventListener("mousemove", e => {
+  const t = e.target.closest && e.target.closest("[data-tip]");
+  if (!t) { tip.style.display = "none"; return; }
+  tip.textContent = t.dataset.tip;
+  tip.style.display = "block";
+  const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8);
+  tip.style.left = x + "px"; tip.style.top = (e.clientY + 16) + "px";
+});
+
+render();
+setInterval(render, 15000);
+</script>
+</body>
+</html>
