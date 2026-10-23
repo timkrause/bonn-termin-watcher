@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: "12,32,52 * * * *"
   workflow_dispatch:
+    inputs:
+      max_age:
+        description: "Restart if the last check is older than this many minutes (0 = test the restart)"
+        default: "30"
 
 permissions:
   contents: read
@@ -18,19 +22,24 @@ jobs:
       TZ: Europe/Berlin
       GH_TOKEN: ${{ github.token }}
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      MAX_AGE: ${{ inputs.max_age || '30' }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main  # the newest data, not the commit from when this run was queued
       - name: Restart the watcher if it is stuck
         run: |
-          [ "$(gh workflow view watch.yml --json state --jq .state)" = "active" ] || { echo "watch disabled, search over"; exit 0; }
+          state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/watch.yml" --jq .state)
+          echo "watch workflow: $state"
+          [ "$state" = "active" ] || exit 0  # disabled once the search is over
           age=$(python3 -c "import json, datetime as dt; t = json.load(open('data/history.json'))[-1]['t']; print(int((dt.datetime.now() - dt.datetime.fromisoformat(t)).total_seconds() // 60))")
-          echo "last check $age min ago"
-          [ "$age" -lt 30 ] && exit 0
+          echo "last check $age min ago (limit $MAX_AGE)"
+          [ "$age" -lt "$MAX_AGE" ] && exit 0
           for id in $(gh run list --workflow watch.yml --json databaseId,status --jq '.[] | select(.status != "completed") | .databaseId'); do
+            echo "cancelling stuck run $id"
             gh run cancel "$id" || true
           done
           sleep 20
-          gh workflow run watch.yml
-          curl -s -H "Content-Type: application/json" -d "{\"topic\": \"$NTFY_TOPIC\", \"title\": \"Bonn Watcher hing – neu gestartet\", \"message\": \"Seit $age Min. keine Prüfung. Der Watcher wurde automatisch neu gestartet.\", \"priority\": 4, \"tags\": [\"warning\"], \"click\": \"https://timkrause.github.io/bonn-termin-watcher/\"}" https://ntfy.sh/ > /dev/null
+          gh workflow run watch.yml && echo "watcher restarted"
+          test=""; [ "$MAX_AGE" = "30" ] || test=" (Test)"
+          curl -s -H "Content-Type: application/json" -d "{\"topic\": \"$NTFY_TOPIC\", \"title\": \"Bonn Watcher hing – neu gestartet$test\", \"message\": \"Seit $age Min. keine Prüfung. Der Watcher wurde automatisch neu gestartet.\", \"priority\": 4, \"tags\": [\"warning\"], \"click\": \"https://timkrause.github.io/bonn-termin-watcher/\"}" https://ntfy.sh/ > /dev/null
