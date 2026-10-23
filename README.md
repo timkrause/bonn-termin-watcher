@@ -1,6 +1,6 @@
 # Bonn Termin Watcher
 
-Checks [termine.bonn.de](https://termine.bonn.de/m/dlz/extern/calendar/?uid=b91bb67b-15cf-44df-ab0b-96ebe25c1ae3&wsid=f44d1cfc-9bb9-49ca-a781-22db9a5f6b85&lang=de)
+Checks [termine.bonn.de](https://termine.bonn.de/m/dlz/extern/calendar/?uid=b91bb67b-15cf-44df-ab0b-96ebe25c1ae3&lang=de)
 about every 5 minutes for a cancelled "Umschreibung eines ausländischen Führerscheins"
 slot in the windows from `config.json`, books it, and pushes an alert via ntfy.
 

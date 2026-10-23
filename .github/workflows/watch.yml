@@ -2,7 +2,9 @@ name: watch
 
 on:
   schedule:
-    - cron: "17 * * * *"  # queues the next job; it starts as soon as the running one ends
+    # Keeps a next job queued; it starts as soon as the running one ends. Every 15 min
+    # because GitHub fires schedules late, and a gap over 10 min left no job queued.
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
 permissions:

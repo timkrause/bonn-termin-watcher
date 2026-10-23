@@ -47,11 +47,14 @@ PUBLIC = os.environ.get("WATCH_PUBLIC") == "1"
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
 INTERVAL_MIN = 5
 BACKOFF_MIN = 30
+BROKEN_AFTER = 3  # errors in a row (with 30 min pauses in between) before an urgent alert
 DONE_EXIT = 10
 
 HOST = "https://termine.bonn.de"
 BASE = HOST + "/m/dlz/extern/calendar/"
-START_QS = "uid=b91bb67b-15cf-44df-ab0b-96ebe25c1ae3&wsid=f44d1cfc-9bb9-49ca-a781-22db9a5f6b85&lang=de"
+# No wsid: that is a browser session which expires after 10 idle minutes;
+# without it the site hands out a fresh one on every check.
+START_QS = "uid=b91bb67b-15cf-44df-ab0b-96ebe25c1ae3&lang=de"
 PUBLIC_URL = BASE + "?" + START_QS
 SERVICE = "ffd89947-51b0-43ff-bcf9-1d271dc9f2d9"   # Umschreibung eines auslaendischen Fuehrerscheins
 SERVICE_MIN = 25
@@ -125,7 +128,7 @@ def token(page):
 def form_action(page):
     m = re.search(r'<form[^>]*method="post"[^>]*action="([^"]+)"', page)
     if not m:
-        raise RuntimeError("no form action on page")
+        raise RuntimeError(f"no form action on page '{page_title(page)}'")
     return BASE + html.unescape(m.group(1)).split("#")[0]
 
 
@@ -338,7 +341,11 @@ def backoff(state, rec, blocked, retry_after=None):
     until = dt.datetime.now() + dt.timedelta(minutes=mins)
     state["pause_until"] = until.isoformat(timespec="seconds")
     rec["msg"] += f" · pausing until {until:%H:%M}"
-    notify("Bonn Watcher pausiert", f"{rec['msg']}. Nächster Versuch {until:%H:%M}.", alert=False)
+    # Quiet at first; loud once it has been failing for over half an hour.
+    broken = state["errors_in_row"] == BROKEN_AFTER
+    notify("Bonn Watcher: Fehler seit über 30 Min!" if broken else "Bonn Watcher pausiert",
+           f"{rec['msg']}. Nächster Versuch {until:%H:%M}." + (" Bitte selbst prüfen." if broken else ""),
+           alert=broken)
 
 
 def write_status(cfg, state, history):
