@@ -20,6 +20,7 @@ NTFY_TOPIC sends alerts to the ntfy phone app instead of macOS notifications.
 Exits with DONE_EXIT once there is nothing left to search for.
 """
 import datetime as dt
+import hashlib
 import html
 import http.cookiejar
 import json
@@ -48,6 +49,8 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
 INTERVAL_MIN = 5
 BACKOFF_MIN = 30
 BROKEN_AFTER = 3  # errors in a row (with 30 min pauses in between) before an urgent alert
+EMAIL_LIMIT_TEXT = "maximale mögliche Anzahl an Terminen"  # city refuses more bookings for this email
+EMAIL_LIMIT_PAUSE_H = 3
 DONE_EXIT = 10
 
 HOST = "https://termine.bonn.de"
@@ -230,22 +233,53 @@ def slot_changes(slots, now):
     return freed, len(taken)
 
 
+def visible_lines(page):
+    page = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page, flags=re.S)
+    text = html.unescape(re.sub(r"<[^>]+>", "\n", page))
+    return [line for line in (re.sub(r"\s+", " ", x).strip() for x in text.split("\n")) if line]
+
+
+def server_message(before, after):
+    """Text the site added after the form was sent, i.e. its reason for refusing.
+    (The form's own error texts are always in the page, so they say nothing.)"""
+    seen = set(visible_lines(before))
+    return "; ".join(line for line in visible_lines(after) if line not in seen)
+
+
+def release(s, page):
+    """Leave the booking step so the held slot is free again, e.g. for a manual booking."""
+    m = re.search(r'data-testid="button_back" href="([^"]+)"', page)
+    if m:
+        try:
+            s.request(BASE + html.unescape(m.group(1)).split("#")[0])
+        except Exception as e:
+            log(f"releasing the slot failed: {type(e).__name__}: {e}")
+
+
+def mail_key(cfg):
+    """Identifies the booking email in the (public) state without revealing it."""
+    return hashlib.sha256(cfg["contact"].get("mail", "").strip().lower().encode()).hexdigest()[:12]
+
+
 def book(s, booking_base, slot, cfg):
     """Returns (outcome, info, page) with outcome True=booked, None=unclear, False=failed."""
     url = (booking_base + slot["raw"] + "&appointment_duration=" + slot["duration"]
            + "&location=" + slot["location"] + "&resources=" + slot["resource"])
-    p = s.request(url)  # reserves the slot for this session
-    if 'id="booking_form"' not in p:
-        return False, f"slot no longer available (page '{page_title(p)}')", p
+    form = s.request(url)  # reserves the slot for this session
+    if 'id="booking_form"' not in form:
+        return False, f"slot no longer available (page '{page_title(form)}')", form
     c = cfg["contact"]
     p = s.request(s.url, {
-        "__RequestVerificationToken": token(p), "action_type": "booking",
+        "__RequestVerificationToken": token(form), "action_type": "booking",
         "first_name": c["first_name"], "last_name": c["last_name"], "mail": c["mail"],
         "phone": c.get("phone", ""), "comment": c.get("comment", ""), "accept_data_privacy": "1",
     })
     if 'id="booking_form"' in p:
-        errs = re.findall(r'class="error_message"[^>]*>([^<]+)<', p)
-        return False, "booking form came back: " + ("; ".join(e.strip() for e in errs) or page_title(p)), p
+        reason = server_message(form, p) or f"no reason given (page '{page_title(p)}')"
+        for v in (c["first_name"], c["last_name"], c["mail"]):
+            reason = reason.replace(v, "…") if v else reason
+        release(s, p)
+        return False, f"refused: {reason}", p
     if "Bestätigung" in page_title(p) or re.search(
             r"erfolgreich|Buchungsnummer|Vorgangsnummer|Termin wurde|bestätigt", page_text(p), re.I):
         return True, page_title(p), p
@@ -288,10 +322,14 @@ def run(cfg, state, rec, dry):
     backup = bool(win.get("backup"))
     when = slot["start"].strftime("%a %d.%m. %H:%M")
     rec.update(slot=local_naive(slot["start"]).isoformat(timespec="minutes"), tier="backup" if backup else "goal")
-    auto = cfg.get("auto_book") and cfg.get("contact", {}).get("mail") and not state.get("unclear")
+    limit = state.get("email_limit") or {}
+    limited = limit.get("mail") == mail_key(cfg) and limit.get("until", "") > now.isoformat(timespec="seconds")
+    auto = (cfg.get("auto_book") and cfg.get("contact", {}).get("mail")
+            and not state.get("unclear") and not limited)
     if not auto:
         if state.get("alerted") != slot["raw"]:
-            notify("Bonn Termin frei!", f"Führerschein-Umschreibung {when} – jetzt buchen", PUBLIC_URL)
+            notify("Bonn Termin frei!", f"Führerschein-Umschreibung {when} – jetzt selbst buchen"
+                   + (" (Auto-Buchung pausiert: E-Mail-Limit)" if limited else ""), PUBLIC_URL)
             state["alerted"] = slot["raw"]
             save_json(STATE, state)
         rec.update(result="alerted", msg=f"alerted for {when}")
@@ -327,7 +365,19 @@ def run(cfg, state, rec, dry):
         notify("Bonn Termin: Buchung unklar", f"{when}: bitte E-Mail prüfen. Auto-Buchung pausiert.", out.as_uri())
     else:
         rec.update(result="failed", msg=f"booking {when} failed: {info}")
-        notify("Bonn Termin: Buchung fehlgeschlagen", f"{when}: {info}. Selbst versuchen!", PUBLIC_URL)
+        if EMAIL_LIMIT_TEXT in info:
+            # Retrying can't help: alert for every match instead and retry auto-booking later.
+            until = now + dt.timedelta(hours=EMAIL_LIMIT_PAUSE_H)
+            state.update(email_limit={"mail": mail_key(cfg), "until": until.isoformat(timespec="seconds")},
+                         alerted=slot["raw"])
+            save_json(STATE, state)
+            notify("Bonn Termin frei – E-Mail-Limit!",
+                   f"{when} ist frei, aber die Stadt lehnt die E-Mail ab: maximale Anzahl Termine erreicht. "
+                   f"Slot ist wieder freigegeben – jetzt selbst buchen! Auto-Buchung pausiert bis {until:%H:%M}.",
+                   PUBLIC_URL)
+        else:
+            notify("Bonn Termin: Buchung fehlgeschlagen",
+                   f"{when}: {info}. Slot ist wieder freigegeben – selbst versuchen!", PUBLIC_URL)
 
 
 def backoff(state, rec, blocked, retry_after=None):

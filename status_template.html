@@ -181,6 +181,8 @@ function render() {
   const age = last ? (now - parse(last.t)) / 60000 : null;
   const real = checks.filter(c => c.result !== "idle" && c.result !== "paused");
   const pauseUntil = D.state.pause_until && parse(D.state.pause_until) > now ? parse(D.state.pause_until) : null;
+  const limit = D.state.email_limit, limitUntil = limit && parse(limit.until) > now ? parse(limit.until) : null;
+  const autoOn = D.auto_book && !D.state.unclear && !limitUntil;
   const errors = checks.filter(c => c.result === "error").length;
   const freedAll = checks.flatMap(c => (c.freed || []).map(s => ({seen: c.t, slot: s})));
 
@@ -200,6 +202,7 @@ function render() {
   if (D.state.booked) banners.push(`<div class="banner hit">Appointment booked: ${esc(D.state.booked)}<span>Stadthaus, Berliner Platz 2. The confirmation goes to ${mail}.${backup
     ? ` <strong>Cancel your backup appointment (${esc(backup)})</strong> with the link in its confirmation email, so the slot goes to someone else.` : ""}</span></div>`);
   else if (backup) banners.push(`<div class="banner hit">Backup booked: ${esc(backup)}<span>Still looking for a slot today or tomorrow. If one turns up it gets booked too, and you cancel the backup with the link in its confirmation email.</span></div>`);
+  if (limitUntil) banners.push(`<div class="banner warn">Auto-booking paused until ${fmtTime(limitUntil)}: the city refused the booking email<span>"Maximum number of appointments reached for this email address." Every matching slot still sends an urgent push so you can book by hand; changing the email in the GitHub secrets resumes auto-booking right away.</span></div>`);
   if (D.state.unclear) banners.push(`<div class="banner warn">Booking for ${esc(D.state.unclear)} was submitted but not clearly confirmed<span>Check ${mail}. Auto-booking is paused so it can't book twice; the watcher now only alerts.</span></div>`);
   $("banner").innerHTML = banners.join("");
 
@@ -234,7 +237,7 @@ function render() {
   const group = (title, ws) => ws.length ? `<li class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;font-weight:600">${title}</li>` + ws.map(winItem).join("") : "";
   $("windows").innerHTML = group("Goal: book and stop", D.windows.filter(w => !w.backup))
     + group("Backup: book, keep looking for goal", D.windows.filter(w => w.backup))
-    + `<li><span>${D.auto_book ? "Auto-book as" : "Alert only"}<br><span class="muted">${D.cloud ? "your details (GitHub secrets)" : `${esc(D.contact.name)} · ${esc(D.contact.mail)}`}</span></span><span class="tag ${D.auto_book && !D.state.unclear ? "open" : "closed"}">${D.auto_book && !D.state.unclear ? "on" : "off"}</span></li>`
+    + `<li><span>${D.auto_book ? "Auto-book as" : "Alert only"}<br><span class="muted">${D.cloud ? "your details (GitHub secrets)" : `${esc(D.contact.name)} · ${esc(D.contact.mail)}`}</span></span><span class="tag ${autoOn ? "open" : "closed"}">${autoOn ? "on" : limitUntil ? "paused" : "off"}</span></li>`
     + `<li><span class="muted">Booking site</span><a href="${esc(D.public_url)}" target="_blank" rel="noopener">open termine.bonn.de ↗</a></li>`;
 
   // freed feed
