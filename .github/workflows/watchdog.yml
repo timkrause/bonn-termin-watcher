@@ -1,0 +1,36 @@
+name: watchdog
+
+# Restarts the watcher if it has gone quiet (no check for 30 min) and pushes an alert.
+on:
+  schedule:
+    - cron: "12,32,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write  # cancel and restart the watch workflow
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TZ: Europe/Berlin
+      GH_TOKEN: ${{ github.token }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main  # the newest data, not the commit from when this run was queued
+      - name: Restart the watcher if it is stuck
+        run: |
+          [ "$(gh workflow view watch.yml --json state --jq .state)" = "active" ] || { echo "watch disabled, search over"; exit 0; }
+          age=$(python3 -c "import json, datetime as dt; t = json.load(open('data/history.json'))[-1]['t']; print(int((dt.datetime.now() - dt.datetime.fromisoformat(t)).total_seconds() // 60))")
+          echo "last check $age min ago"
+          [ "$age" -lt 30 ] && exit 0
+          for id in $(gh run list --workflow watch.yml --json databaseId,status --jq '.[] | select(.status != "completed") | .databaseId'); do
+            gh run cancel "$id" || true
+          done
+          sleep 20
+          gh workflow run watch.yml
+          curl -s -H "Content-Type: application/json" -d "{\"topic\": \"$NTFY_TOPIC\", \"title\": \"Bonn Watcher hing – neu gestartet\", \"message\": \"Seit $age Min. keine Prüfung. Der Watcher wurde automatisch neu gestartet.\", \"priority\": 4, \"tags\": [\"warning\"], \"click\": \"https://timkrause.github.io/bonn-termin-watcher/\"}" https://ntfy.sh/ > /dev/null
