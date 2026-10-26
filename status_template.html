@@ -112,7 +112,7 @@
   <header>
     <div>
       <h1>Bonn Termin Watcher</h1>
-      <div class="sub">Umschreibung eines ausländischen Führerscheins · Dienstleistungszentrum, Berliner Platz 2</div>
+      <div class="sub" id="sub"></div>
     </div>
     <div id="status" class="pill"><span class="dot"></span><span></span></div>
   </header>
@@ -169,9 +169,11 @@ const RES = {
 };
 const hmAdd = (hm, mins) => { const [h, m] = hm.split(":").map(Number), t = h * 60 + m + mins;
   return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`; };
-const rule = w => w.before ? `starts before ${w.before}` : w.end_by ? `over by ${w.end_by} (starts by ${hmAdd(w.end_by, -D.duration_min)})` : `starts ${w.after} or later`;
+const rule = w => w.before ? `starts before ${w.before}` : w.end_by ? `over by ${w.end_by} (starts by ${hmAdd(w.end_by, -D.duration_min)})`
+  : w.after ? `starts ${w.after} or later` : "any time";
 const windowOf = s => D.windows.find(w => s.slice(0, 10) === w.date && (w.before ? s.slice(11, 16) < w.before
-  : w.end_by ? hmAdd(s.slice(11, 16), D.duration_min) <= w.end_by : s.slice(11, 16) >= w.after));
+  : w.end_by ? hmAdd(s.slice(11, 16), D.duration_min) <= w.end_by : s.slice(11, 16) >= (w.after || "00:00")));
+$("sub").textContent = `${D.label} (${D.duration_min} min) · Dienstleistungszentrum, Berliner Platz 2`;
 
 function render() {
   const now = new Date();
@@ -195,13 +197,13 @@ function render() {
   else if (pauseUntil) st = ["warn", `Paused until ${fmtTime(pauseUntil)} · backing off after errors`];
   else if (age > (D.cloud ? 20 : D.interval_min * 1.6)) st = ["warn", `No check for ${dur(age)}${D.cloud ? "" : " · Mac asleep?"}`];
   else if (last.result === "error") st = ["bad", "Last check failed · retrying"];
-  else st = ["ok", backup ? "Watching · backup booked, hunting Thu/Fri" : D.auto_book ? "Watching · auto-book on" : "Watching · alert only"];
+  else st = ["ok", backup ? "Watching · backup booked, hunting goal slot" : D.auto_book ? "Watching · auto-book on" : "Watching · alert only"];
   $("status").className = "pill " + st[0];
   $("status").lastElementChild.textContent = st[1];
   const banners = [], mail = esc(D.contact.mail || "your email");
   if (D.state.booked) banners.push(`<div class="banner hit">Appointment booked: ${esc(D.state.booked)}<span>Stadthaus, Berliner Platz 2. The confirmation goes to ${mail}.${backup
     ? ` <strong>Cancel your backup appointment (${esc(backup)})</strong> with the link in its confirmation email, so the slot goes to someone else.` : ""}</span></div>`);
-  else if (backup) banners.push(`<div class="banner hit">Backup booked: ${esc(backup)}<span>Still looking for a slot today or tomorrow. If one turns up it gets booked too, and you cancel the backup with the link in its confirmation email.</span></div>`);
+  else if (backup) banners.push(`<div class="banner hit">Backup booked: ${esc(backup)}<span>Still looking for a goal slot. If one turns up it gets booked too, and you cancel the backup with the link in its confirmation email.</span></div>`);
   if (limitUntil) banners.push(`<div class="banner warn">Auto-booking paused until ${fmtTime(limitUntil)}: the city refused the booking email<span>"Maximum number of appointments reached for this email address." Every matching slot still sends an urgent push so you can book by hand; changing the email in the GitHub secrets resumes auto-booking right away.</span></div>`);
   if (D.state.unclear) banners.push(`<div class="banner warn">Booking for ${esc(D.state.unclear)} was submitted but not clearly confirmed<span>Check ${mail}. Auto-booking is paused so it can't book twice; the watcher now only alerts.</span></div>`);
   $("banner").innerHTML = banners.join("");
@@ -213,7 +215,8 @@ function render() {
   const tiles = [
     ["Last check", last ? ago(age) : "–", last ? fmtTime(parse(last.t)) + (last.secs != null ? ` · took ${last.secs} s` : "") : "no checks yet"],
     D.cloud
-      ? ["Checks run", pauseUntil ? `after ${fmtTime(pauseUntil)}` : `every ~${D.interval_min} min`, pauseUntil ? "paused after errors" : "on GitHub · this page updates every ~10 min"]
+      ? ["Checks run", pauseUntil ? `after ${fmtTime(pauseUntil)}` : `every ~${D.interval_min} min`, pauseUntil ? "paused after errors"
+        : (D.fast_checks ? `every minute ${D.fast_checks[0]}–${D.fast_checks[1]} · ` : "") + "page updates every ~10 min"]
       : ["Next check", pauseUntil ? `after ${fmtTime(pauseUntil)}` : last && now < stop ? (nextIn > 0 ? `in ~${dur(nextIn)}` : nextIn > -1.5 ? "any moment" : `overdue ${dur(-nextIn)}`) : "–",
       pauseUntil ? "paused after errors" : `every ${D.interval_min - 1}–${D.interval_min + 1} min, randomized`],
     ["Checks", String(real.length), `${errors} error${errors === 1 ? "" : "s"}${checks[0] ? " · since " + fmtDay(parse(checks[0].t)) + " " + fmtTime(parse(checks[0].t)) : ""}`],
@@ -231,7 +234,8 @@ function render() {
     const done = D.state.booked || (w.backup && backup);
     const tag = done ? ["closed", w.backup && backup && !D.state.booked ? "backup booked" : "done"]
       : now >= cutoff ? ["closed", "closed"] : day.toDateString() === today ? ["open", "open now"] : ["later", "upcoming"];
-    const note = w.after ? "any time that day" : `checks until ${fmtTime(cutoff)} (${D.min_lead_minutes} min notice)`;
+    const note = w.before || w.end_by ? `checks until ${fmtTime(cutoff)} (${D.min_lead_minutes} min notice)`
+      : w.after ? "any time that day" : `at least ${D.min_lead_minutes} min notice`;
     return `<li><span>${fmtDay(day)} · ${rule(w)}<br><span class="muted">${note}</span></span><span class="tag ${tag[0]}">${tag[1]}</span></li>`;
   };
   const group = (title, ws) => ws.length ? `<li class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;font-weight:600">${title}</li>` + ws.map(winItem).join("") : "";

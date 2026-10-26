@@ -1,35 +1,20 @@
 {
+  "label": "Führerschein-Abholung + Internationaler Führerschein",
+  "services": {
+    "46479107-d2e9-4b3f-bc3e-bda29a1fbc54": "Abholung eines Führerscheins",
+    "bda1d2c9-7516-4b21-afbf-43f55512a00b": "Beantragung eines Internationalen Führerscheins"
+  },
+  "duration_min": 20,
   "windows": [
     {
-      "date": "2026-10-22",
-      "before": "16:00"
-    },
-    {
-      "date": "2026-10-23",
-      "before": "08:30"
-    },
-    {
-      "date": "2026-10-26",
-      "end_by": "14:00",
-      "backup": true
-    },
-    {
-      "date": "2026-10-26",
-      "after": "15:00",
-      "backup": true
-    },
-    {
-      "date": "2026-10-27",
-      "end_by": "10:00",
-      "backup": true
-    },
-    {
-      "date": "2026-10-27",
-      "after": "12:00",
-      "backup": true
+      "date": "2026-10-30"
     }
   ],
-  "stop_after": "2026-10-27 18:00",
+  "stop_after": "2026-10-30 13:00",
+  "fast_checks": [
+    "07:05",
+    "07:20"
+  ],
   "min_lead_minutes": 35,
   "auto_book": true,
   "contact": {

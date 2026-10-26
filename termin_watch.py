@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Watch termine.bonn.de for an early "Umschreibung eines auslaendischen
-Fuehrerscheins" slot and (optionally) book it automatically.
+"""Watch termine.bonn.de for a slot for the services in config.json (booked
+together as one appointment) and (optionally) book it automatically.
 
 Run once per invocation; launchd calls it every 5 minutes with --jitter 60, so
 checks land 4-6 minutes apart. After a 403/429 or two errors in a row it pauses
@@ -59,8 +59,6 @@ BASE = HOST + "/m/dlz/extern/calendar/"
 # without it the site hands out a fresh one on every check.
 START_QS = "uid=b91bb67b-15cf-44df-ab0b-96ebe25c1ae3&lang=de"
 PUBLIC_URL = BASE + "?" + START_QS
-SERVICE = "ffd89947-51b0-43ff-bcf9-1d271dc9f2d9"   # Umschreibung eines auslaendischen Fuehrerscheins
-SERVICE_MIN = 25
 LOCATION = "b164ae03-a5ea-4b01-8845-f582dabb947c"  # Dienstleistungszentrum, Berliner Platz 2
 STEPS = "serviceslocationssearch_resultsbookingfinish"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
@@ -145,13 +143,13 @@ def page_text(page):
     return html.unescape(re.sub(r"<[^>]+>", " ", page))
 
 
-def fetch_slots(s):
+def fetch_slots(s, services):
     """Walk services -> location -> search; return (slots, booking_base_url)."""
     p = s.request(PUBLIC_URL)
     p = s.request(form_action(p), {
         "__RequestVerificationToken": token(p), "action_type": "", "steps": STEPS,
         "step_current": "services", "step_current_index": "0", "step_goto": "+1",
-        "access_code_key": "", "services": SERVICE, f"service_{SERVICE}_amount": "1",
+        "access_code_key": "", "services": ["", *services], **{f"service_{x}_amount": "1" for x in services},
     })
     if 'name="locations"' not in p:
         raise RuntimeError(f"service step failed, got page '{page_title(p)}'")
@@ -180,14 +178,15 @@ def local_naive(t):
 
 
 def in_window(start, dur_min, w):
-    """A window is one day plus one rule: starts "before", is over by "end_by", or starts "after" (or at)."""
+    """A window is one day plus at most one rule: starts "before", is over by "end_by",
+    or starts "after" (or at). Without a rule any time that day counts."""
     if start.date().isoformat() != w["date"]:
         return False
     if "before" in w:
         return start.strftime("%H:%M") < w["before"]
     if "end_by" in w:
         return (start + dt.timedelta(minutes=dur_min)).strftime("%H:%M") <= w["end_by"]
-    return start.strftime("%H:%M") >= w["after"]
+    return start.strftime("%H:%M") >= w.get("after", "00:00")
 
 
 def match(slot, cfg, now):
@@ -198,10 +197,10 @@ def match(slot, cfg, now):
     return next((w for w in cfg["windows"] if in_window(start, int(slot["duration"]), w)), None)
 
 
-def deadline(w, lead):
+def deadline(w, lead, dur):
     """Last moment a check can still find a slot for this window."""
     h, m = map(int, (w.get("before") or w.get("end_by") or "23:59").split(":"))
-    lead += SERVICE_MIN if "end_by" in w else 0
+    lead += dur if "end_by" in w else 0
     return dt.datetime.fromisoformat(w["date"]).replace(hour=h, minute=m) - dt.timedelta(minutes=lead)
 
 
@@ -212,7 +211,7 @@ def search_until(cfg, state):
     lead = cfg.get("min_lead_minutes", 30)
     wins = [w for w in cfg["windows"] if not (w.get("backup") and state.get("backup_booked"))]
     stop = dt.datetime.strptime(cfg["stop_after"], "%Y-%m-%d %H:%M")
-    return min(stop, max((deadline(w, lead) for w in wins), default=dt.datetime.min))
+    return min(stop, max((deadline(w, lead, cfg["duration_min"]) for w in wins), default=dt.datetime.min))
 
 
 def slot_changes(slots, now):
@@ -301,7 +300,7 @@ def run(cfg, state, rec, dry):
         return
 
     s = Session()
-    slots, booking_base = fetch_slots(s)
+    slots, booking_base = fetch_slots(s, cfg["services"])
     # Once a backup is booked, only goal windows (today/tomorrow) still count.
     hits = [(x, w) for x in slots for w in [match(x, cfg, now)]
             if w and not (w.get("backup") and state.get("backup_booked"))]
@@ -328,7 +327,7 @@ def run(cfg, state, rec, dry):
             and not state.get("unclear") and not limited)
     if not auto:
         if state.get("alerted") != slot["raw"]:
-            notify("Bonn Termin frei!", f"Führerschein-Umschreibung {when} – jetzt selbst buchen"
+            notify("Bonn Termin frei!", f"{cfg['label']} {when} – jetzt selbst buchen"
                    + (" (Auto-Buchung pausiert: E-Mail-Limit)" if limited else ""), PUBLIC_URL)
             state["alerted"] = slot["raw"]
             save_json(STATE, state)
@@ -349,20 +348,20 @@ def run(cfg, state, rec, dry):
         save_json(STATE, state)
         rec.update(result="booked_backup" if outcome else "unclear", msg=f"backup {when}: {info}")
         notify("Bonn Backup-Termin GEBUCHT" if outcome else "Bonn Backup-Buchung unklar",
-               f"{when}. Bitte E-Mail prüfen. Suche weiter nach heute/morgen.", out.as_uri())
+               f"{when}. Bitte E-Mail prüfen. Suche weiter nach einem Wunschtermin.", out.resolve().as_uri())
     elif outcome:
         state["booked"] = when
         save_json(STATE, state)
         rec.update(result="booked", msg=f"booked {when}: {info}")
         cancel = (f" Backup {state['backup_booked']} bitte über den Link in dessen E-Mail stornieren!"
                   if state.get("backup_booked") else " Bitte E-Mail prüfen.")
-        notify("Bonn Termin GEBUCHT", f"{when}, Stadthaus Berliner Platz 2.{cancel}", out.as_uri())
+        notify("Bonn Termin GEBUCHT", f"{when}, Stadthaus Berliner Platz 2.{cancel}", out.resolve().as_uri())
     elif outcome is None:
         # Might have booked; stop auto-booking so it never books a second slot.
         state["unclear"] = when
         save_json(STATE, state)
         rec.update(result="unclear", msg=f"booking {when} unclear: {info}")
-        notify("Bonn Termin: Buchung unklar", f"{when}: bitte E-Mail prüfen. Auto-Buchung pausiert.", out.as_uri())
+        notify("Bonn Termin: Buchung unklar", f"{when}: bitte E-Mail prüfen. Auto-Buchung pausiert.", out.resolve().as_uri())
     else:
         rec.update(result="failed", msg=f"booking {when} failed: {info}")
         if EMAIL_LIMIT_TEXT in info:
@@ -402,10 +401,12 @@ def write_status(cfg, state, history):
     data = {
         "generated": dt.datetime.now().isoformat(timespec="seconds"),
         "interval_min": INTERVAL_MIN,
-        "windows": [dict(w, deadline=deadline(w, cfg.get("min_lead_minutes", 30)).isoformat(timespec="minutes"))
-                    for w in cfg["windows"]],
+        "fast_checks": cfg.get("fast_checks"),
+        "windows": [dict(w, deadline=deadline(w, cfg.get("min_lead_minutes", 30), cfg["duration_min"])
+                         .isoformat(timespec="minutes")) for w in cfg["windows"]],
         "search_until": None if state.get("booked") else search_until(cfg, state).isoformat(timespec="minutes"),
-        "duration_min": SERVICE_MIN,
+        "label": cfg["label"],
+        "duration_min": cfg["duration_min"],
         "min_lead_minutes": cfg.get("min_lead_minutes", 30),
         "auto_book": bool(cfg.get("auto_book")),
         "contact": {"name": "", "mail": ""} if PUBLIC else {

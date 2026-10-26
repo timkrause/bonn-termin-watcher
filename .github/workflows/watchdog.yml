@@ -32,7 +32,7 @@ jobs:
           state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/watch.yml" --jq .state)
           echo "watch workflow: $state"
           [ "$state" = "active" ] || exit 0  # disabled once the search is over
-          age=$(python3 -c "import json, datetime as dt; t = json.load(open('data/history.json'))[-1]['t']; print(int((dt.datetime.now() - dt.datetime.fromisoformat(t)).total_seconds() // 60))")
+          age=$(python3 -c "import json, datetime as dt; h = json.load(open('data/history.json')); print(int((dt.datetime.now() - dt.datetime.fromisoformat(h[-1]['t'])).total_seconds() // 60) if h else 0)")
           echo "last check $age min ago (limit $MAX_AGE)"
           [ "$age" -lt "$MAX_AGE" ] && exit 0
           for id in $(gh run list --workflow watch.yml --json databaseId,status --jq '.[] | select(.status != "completed") | .databaseId'); do
