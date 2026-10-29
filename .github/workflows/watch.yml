@@ -30,6 +30,7 @@ jobs:
       CONTACT_FIRST_NAME: ${{ secrets.CONTACT_FIRST_NAME }}
       CONTACT_LAST_NAME: ${{ secrets.CONTACT_LAST_NAME }}
       CONTACT_MAIL: ${{ secrets.CONTACT_MAIL }}
+      CONTACT_MAIL_BACKUP: ${{ secrets.CONTACT_MAIL_BACKUP }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4

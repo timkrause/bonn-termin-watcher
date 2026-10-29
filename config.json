@@ -15,6 +15,16 @@
       "after": "10:00"
     }
   ],
+  "prefer": [
+    [
+      "08:00",
+      "08:00"
+    ],
+    [
+      "10:00",
+      "10:55"
+    ]
+  ],
   "stop_after": "2026-10-30 13:00",
   "fast_checks": [
     "07:05",
@@ -26,6 +36,7 @@
     "first_name": "",
     "last_name": "",
     "mail": "",
+    "mail_backup": "",
     "phone": "",
     "comment": ""
   }

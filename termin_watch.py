@@ -51,6 +51,8 @@ BACKOFF_MIN = 30
 BROKEN_AFTER = 3  # errors in a row (with 30 min pauses in between) before an urgent alert
 EMAIL_LIMIT_TEXT = "maximale mögliche Anzahl an Terminen"  # city refuses more bookings for this email
 EMAIL_LIMIT_PAUSE_H = 3
+MAX_SLOT_TRIES = 3  # slots to try in one check when the best ones are taken meanwhile
+GONE = "slot no longer available"
 DONE_EXIT = 10
 
 HOST = "https://termine.bonn.de"
@@ -197,6 +199,14 @@ def match(slot, cfg, now):
     return next((w for w in cfg["windows"] if in_window(start, int(slot["duration"]), w)), None)
 
 
+def rank(slot, cfg):
+    """Pick order among slots found in the same check: the first "prefer" range of
+    start times (inclusive "HH:MM" pairs) the slot falls in, then the rest; earliest first."""
+    hm = local_naive(slot["start"]).strftime("%H:%M")
+    prefer = cfg.get("prefer", [])
+    return next((i for i, (a, b) in enumerate(prefer) if a <= hm <= b), len(prefer)), slot["start"]
+
+
 def deadline(w, lead, dur):
     """Last moment a check can still find a slot for this window."""
     h, m = map(int, (w.get("before") or w.get("end_by") or "23:59").split(":"))
@@ -255,27 +265,33 @@ def release(s, page):
             log(f"releasing the slot failed: {type(e).__name__}: {e}")
 
 
-def mail_key(cfg):
-    """Identifies the booking email in the (public) state without revealing it."""
-    return hashlib.sha256(cfg["contact"].get("mail", "").strip().lower().encode()).hexdigest()[:12]
+def mail_key(mail):
+    """Identifies a booking email in the (public) state without revealing it."""
+    return hashlib.sha256(mail.strip().lower().encode()).hexdigest()[:12]
 
 
-def book(s, booking_base, slot, cfg):
+def usable_mails(cfg, state, now):
+    """The booking emails, main one first, minus those the city recently refused for its limit."""
+    limits = state.get("email_limit") or {}
+    return [m for m in cfg["mails"] if limits.get(mail_key(m), "") <= now.isoformat(timespec="seconds")]
+
+
+def book(s, booking_base, slot, cfg, mail):
     """Returns (outcome, info, page) with outcome True=booked, None=unclear, False=failed."""
     url = (booking_base + slot["raw"] + "&appointment_duration=" + slot["duration"]
            + "&location=" + slot["location"] + "&resources=" + slot["resource"])
     form = s.request(url)  # reserves the slot for this session
     if 'id="booking_form"' not in form:
-        return False, f"slot no longer available (page '{page_title(form)}')", form
+        return False, f"{GONE} (page '{page_title(form)}')", form
     c = cfg["contact"]
     p = s.request(s.url, {
         "__RequestVerificationToken": token(form), "action_type": "booking",
-        "first_name": c["first_name"], "last_name": c["last_name"], "mail": c["mail"],
+        "first_name": c["first_name"], "last_name": c["last_name"], "mail": mail,
         "phone": c.get("phone", ""), "comment": c.get("comment", ""), "accept_data_privacy": "1",
     })
     if 'id="booking_form"' in p:
         reason = server_message(form, p) or f"no reason given (page '{page_title(p)}')"
-        for v in (c["first_name"], c["last_name"], c["mail"]):
+        for v in (c["first_name"], c["last_name"], mail):
             reason = reason.replace(v, "…") if v else reason
         release(s, p)
         return False, f"refused: {reason}", p
@@ -283,6 +299,31 @@ def book(s, booking_base, slot, cfg):
             r"erfolgreich|Buchungsnummer|Vorgangsnummer|Termin wurde|bestätigt", page_text(p), re.I):
         return True, page_title(p), p
     return None, f"no booking form, no confirmation text (page '{page_title(p)}')", p
+
+
+def book_best(s, booking_base, hits, cfg, mails, state, now):
+    """Book the best of hits that works: a slot taken meanwhile moves on to the next
+    one (up to MAX_SLOT_TRIES), a refused email to the backup email.
+    Returns (slot, window, mail, outcome, info, page) of the last attempt."""
+    mails = list(mails)
+    for slot, win in hits[:MAX_SLOT_TRIES]:
+        while mails:
+            mail = mails[0]
+            try:
+                outcome, info, page = book(s, booking_base, slot, cfg, mail)
+            except Exception as e:  # may have gone through; treat as unclear so it never books twice
+                return slot, win, mail, None, f"{type(e).__name__}: {e}", ""
+            if outcome is not False or info.startswith(GONE):
+                break
+            log(f"{slot['start']:%H:%M} refused for email {cfg['mails'].index(mail) + 1}: {info}")
+            if EMAIL_LIMIT_TEXT in info:  # retrying this email can't help for a while
+                until = now + dt.timedelta(hours=EMAIL_LIMIT_PAUSE_H)
+                state.setdefault("email_limit", {})[mail_key(mail)] = until.isoformat(timespec="seconds")
+            mails.pop(0)
+        if outcome is not False or not mails:  # booked, unclear, or every email refused
+            break
+        log(f"{slot['start']:%H:%M} was taken meanwhile")
+    return slot, win, mail, outcome, info, page
 
 
 def run(cfg, state, rec, dry):
@@ -309,6 +350,8 @@ def run(cfg, state, rec, dry):
     if not dry:
         freed, taken = slot_changes(slots, now)
         rec.update(freed=freed and freed[:20], freed_count=None if freed is None else len(freed), taken_count=taken)
+    # A goal slot always wins over a backup; then the "prefer" order, then the earliest.
+    hits.sort(key=lambda h: (bool(h[1].get("backup")), *rank(h[0], cfg)))
     if dry:
         rec["msg"] = "dry run: " + (", ".join(
             f"{x['start']:%a %d.%m. %H:%M}{' (backup)' if w.get('backup') else ''}" for x, w in hits) or "nothing")
@@ -316,16 +359,13 @@ def run(cfg, state, rec, dry):
     if not hits:
         return
 
-    # A goal slot always wins; otherwise the earliest backup slot.
-    slot, win = next(((x, w) for x, w in hits if not w.get("backup")), hits[0])
-    backup = bool(win.get("backup"))
-    when = slot["start"].strftime("%a %d.%m. %H:%M")
-    rec.update(slot=local_naive(slot["start"]).isoformat(timespec="minutes"), tier="backup" if backup else "goal")
-    limit = state.get("email_limit") or {}
-    limited = limit.get("mail") == mail_key(cfg) and limit.get("until", "") > now.isoformat(timespec="seconds")
-    auto = (cfg.get("auto_book") and cfg.get("contact", {}).get("mail")
-            and not state.get("unclear") and not limited)
-    if not auto:
+    mails = usable_mails(cfg, state, now)
+    limited = bool(cfg["mails"]) and not mails
+    if not (cfg.get("auto_book") and mails and not state.get("unclear")):
+        slot, win = hits[0]
+        when = slot["start"].strftime("%a %d.%m. %H:%M")
+        rec.update(slot=local_naive(slot["start"]).isoformat(timespec="minutes"),
+                   tier="backup" if win.get("backup") else "goal")
         if state.get("alerted") != slot["raw"]:
             notify("Bonn Termin frei!", f"{cfg['label']} {when} – jetzt selbst buchen"
                    + (" (Auto-Buchung pausiert: E-Mail-Limit)" if limited else ""), PUBLIC_URL)
@@ -334,46 +374,50 @@ def run(cfg, state, rec, dry):
         rec.update(result="alerted", msg=f"alerted for {when}")
         return
 
-    try:
-        outcome, info, page = book(s, booking_base, slot, cfg)
-    except Exception as e:  # may have gone through; treat as unclear so it never books twice
-        outcome, info, page = None, f"{type(e).__name__}: {e}", ""
+    slot, win, mail, outcome, info, page = book_best(s, booking_base, hits, cfg, mails, state, now)
+    backup = bool(win.get("backup"))
+    when = slot["start"].strftime("%a %d.%m. %H:%M")
+    via = "" if mail == cfg["mails"][0] else " (backup email)"
+    inbox = "Bitte E-Mail prüfen" if not via else "Bestätigung ging an die Backup-E-Mail"
+    rec.update(slot=local_naive(slot["start"]).isoformat(timespec="minutes"), tier="backup" if backup else "goal")
     out = DATA / f"booking_result_{now:%Y%m%d_%H%M%S}.html"  # has personal data; never committed
     out.write_text(page, encoding="utf-8")
     if not PUBLIC:
         rec["page"] = out.name
     if backup and outcome is not False:
         # Booked or unclear: either way stop booking backups, keep hunting for a goal slot.
-        state["backup_booked"] = when if outcome else f"{when} (unclear)"
+        state["backup_booked"] = (when if outcome else f"{when} (unclear)") + via
         save_json(STATE, state)
-        rec.update(result="booked_backup" if outcome else "unclear", msg=f"backup {when}: {info}")
+        rec.update(result="booked_backup" if outcome else "unclear", msg=f"backup {when}{via}: {info}")
         notify("Bonn Backup-Termin GEBUCHT" if outcome else "Bonn Backup-Buchung unklar",
-               f"{when}. Bitte E-Mail prüfen. Suche weiter nach einem Wunschtermin.", out.resolve().as_uri())
+               f"{when}. {inbox}. Suche weiter nach einem Wunschtermin.", out.resolve().as_uri())
     elif outcome:
-        state["booked"] = when
+        state["booked"] = when + via
         save_json(STATE, state)
-        rec.update(result="booked", msg=f"booked {when}: {info}")
+        rec.update(result="booked", msg=f"booked {when}{via}: {info}")
         cancel = (f" Backup {state['backup_booked']} bitte über den Link in dessen E-Mail stornieren!"
-                  if state.get("backup_booked") else " Bitte E-Mail prüfen.")
+                  if state.get("backup_booked") else f" {inbox}.")
         notify("Bonn Termin GEBUCHT", f"{when}, Stadthaus Berliner Platz 2.{cancel}", out.resolve().as_uri())
     elif outcome is None:
         # Might have booked; stop auto-booking so it never books a second slot.
-        state["unclear"] = when
+        state["unclear"] = when + via
         save_json(STATE, state)
-        rec.update(result="unclear", msg=f"booking {when} unclear: {info}")
-        notify("Bonn Termin: Buchung unklar", f"{when}: bitte E-Mail prüfen. Auto-Buchung pausiert.", out.resolve().as_uri())
+        rec.update(result="unclear", msg=f"booking {when}{via} unclear: {info}")
+        notify("Bonn Termin: Buchung unklar", f"{when}: {inbox}. Auto-Buchung pausiert.", out.resolve().as_uri())
     else:
         rec.update(result="failed", msg=f"booking {when} failed: {info}")
-        if EMAIL_LIMIT_TEXT in info:
-            # Retrying can't help: alert for every match instead and retry auto-booking later.
-            until = now + dt.timedelta(hours=EMAIL_LIMIT_PAUSE_H)
-            state.update(email_limit={"mail": mail_key(cfg), "until": until.isoformat(timespec="seconds")},
-                         alerted=slot["raw"])
+        if not usable_mails(cfg, state, now):
+            # Every email is over the city's limit: alert for every match instead, retry later.
+            until = min(state["email_limit"][mail_key(m)] for m in cfg["mails"])
+            state["alerted"] = slot["raw"]
             save_json(STATE, state)
             notify("Bonn Termin frei – E-Mail-Limit!",
-                   f"{when} ist frei, aber die Stadt lehnt die E-Mail ab: maximale Anzahl Termine erreicht. "
-                   f"Slot ist wieder freigegeben – jetzt selbst buchen! Auto-Buchung pausiert bis {until:%H:%M}.",
-                   PUBLIC_URL)
+                   f"{when} ist frei, aber die Stadt lehnt {'beide E-Mails' if len(cfg['mails']) > 1 else 'die E-Mail'} ab: "
+                   f"maximale Anzahl Termine erreicht. Slot ist wieder freigegeben – jetzt selbst buchen! "
+                   f"Auto-Buchung pausiert bis {until[11:16]}.", PUBLIC_URL)
+        elif info.startswith(GONE):
+            notify("Bonn Termin: Slot schon weg", f"{when} war vergeben, bevor gebucht werden konnte. "
+                   "Suche läuft weiter.", PUBLIC_URL, alert=False)
         else:
             notify("Bonn Termin: Buchung fehlgeschlagen",
                    f"{when}: {info}. Slot ist wieder freigegeben – selbst versuchen!", PUBLIC_URL)
@@ -409,9 +453,11 @@ def write_status(cfg, state, history):
         "duration_min": cfg["duration_min"],
         "min_lead_minutes": cfg.get("min_lead_minutes", 30),
         "auto_book": bool(cfg.get("auto_book")),
+        "prefer": cfg.get("prefer"),
+        "mail_keys": [mail_key(m) for m in cfg["mails"]],
         "contact": {"name": "", "mail": ""} if PUBLIC else {
             "name": f"{cfg['contact'].get('first_name', '')} {cfg['contact'].get('last_name', '')}".strip(),
-            "mail": cfg["contact"].get("mail", "")},
+            "mail": " / ".join(cfg["mails"])},
         "cloud": PUBLIC,
         "stop_hint": os.environ.get("WATCH_STOP_HINT") or "launchctl bootout gui/501/local.bonn-termin-watch",
         "state": state,
@@ -429,8 +475,9 @@ def main():
     dry = "--dry-run" in sys.argv
     config = Path(sys.argv[sys.argv.index("--config") + 1]) if "--config" in sys.argv else CONFIG
     cfg = json.loads(config.read_text(encoding="utf-8"))
-    for key in ("first_name", "last_name", "mail", "phone"):
+    for key in ("first_name", "last_name", "mail", "mail_backup", "phone"):
         cfg["contact"][key] = os.environ.get(f"CONTACT_{key.upper()}") or cfg["contact"].get(key, "")
+    cfg["mails"] = [m for m in (cfg["contact"]["mail"], cfg["contact"]["mail_backup"]) if m]
     state = load_json(STATE, {})
     jitter = int(sys.argv[sys.argv.index("--jitter") + 1]) if "--jitter" in sys.argv else 0
     if jitter and not state.get("booked") and dt.datetime.now().strftime("%Y-%m-%d %H:%M") < cfg["stop_after"]:
